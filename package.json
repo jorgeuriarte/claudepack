@@ -9,7 +9,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "prepublishOnly": "npm run lint",
-    "lint": "echo \"No lint configuration yet\" && exit 0"
+    "lint": "echo \"No lint configuration yet\" && exit 0",
+    "release": "git push --follow-tags && npm publish",
+    "version": "npm version"
   },
   "keywords": [
     "claude",
