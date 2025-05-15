@@ -1,0 +1,202 @@
+#!/bin/bash
+
+# Colores para mensajes
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Función para mostrar mensajes de estatus
+function echo_status {
+    echo -e "${BLUE}> ${1}${NC}"
+}
+
+# Función para mostrar éxito
+function echo_success {
+    echo -e "${GREEN}> ${1}${NC}"
+}
+
+# Función para mostrar errores
+function echo_error {
+    echo -e "${RED}ERROR: ${1}${NC}"
+    exit 1
+}
+
+# Función para mostrar advertencias
+function echo_warning {
+    echo -e "${YELLOW}ADVERTENCIA: ${1}${NC}"
+}
+
+# Verificar estructura del paquete
+if [ ! -f ".claude-manifest.json" ]; then
+    echo_error "Este directorio no contiene un paquete claudepack válido"
+fi
+
+# Leer el manifiesto (se requiere jq)
+if ! command -v jq &> /dev/null; then
+    echo_warning "La herramienta 'jq' no está instalada. No se puede validar el manifiesto."
+    echo_warning "Continuando sin validación completa..."
+else
+    PACKAGE_VERSION=$(jq -r '.claudepack_version' .claude-manifest.json 2>/dev/null || echo "desconocida")
+    STRUCTURE_VERSION=$(jq -r '.structure_version' .claude-manifest.json 2>/dev/null || echo "desconocida")
+    ORIGINAL_PROJECT_PATH=$(jq -r '.project_path' .claude-manifest.json 2>/dev/null || echo "desconocido")
+    PROJECT_NAME=$(jq -r '.project_name' .claude-manifest.json 2>/dev/null || echo "{{PROJECT_NAME}}")
+    
+    echo_status "Paquete claudepack versión: $PACKAGE_VERSION"
+    echo_status "Versión de estructura: $STRUCTURE_VERSION"
+    echo_status "Proyecto original: $ORIGINAL_PROJECT_PATH"
+fi
+
+# Detectar sistema
+echo_status "Detectando sistema..."
+SYSTEM=$(uname)
+echo_status "Sistema detectado: $SYSTEM"
+
+# Verificar sistema compatible
+if [ "$SYSTEM" != "Darwin" ] && [ "$SYSTEM" != "Linux" ]; then
+    echo_warning "Este script está optimizado para macOS y Linux."
+    echo_warning "Es posible que no funcione correctamente en tu sistema ($SYSTEM)."
+    echo "¿Deseas continuar de todos modos? (s/n)"
+    read -r CONFIRM
+    if [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ]; then
+        echo "Instalación cancelada."
+        exit 0
+    fi
+fi
+
+# Obtener ruta actual
+CURRENT_PATH=$(pwd)
+echo_status "Ubicación actual del proyecto: $CURRENT_PATH"
+
+# Obtener ruta al directorio home
+HOME_DIR="$HOME"
+
+# Encontrar directorio .claude-db
+CLAUDE_DB_PATH="$HOME_DIR/.claude-db"
+
+if [ ! -d "$CLAUDE_DB_PATH" ]; then
+    echo_warning "No se encontró el directorio .claude-db en $CLAUDE_DB_PATH"
+    echo_warning "Se creará el directorio, pero asegúrate de que Claude Code está instalado."
+    mkdir -p "$CLAUDE_DB_PATH/projects" "$CLAUDE_DB_PATH/todos" "$CLAUDE_DB_PATH/statsig"
+fi
+
+# Normalizar ruta según convenciones de Claude
+if [ "$SYSTEM" = "Darwin" ] || [ "$SYSTEM" = "Linux" ]; then
+    NORMALIZED_PATH=$(echo "$CURRENT_PATH" | sed 's/\//\-/g')
+else
+    # Windows (aproximación)
+    NORMALIZED_PATH=$(echo "$CURRENT_PATH" | sed 's/\\/\-/g' | sed 's/://')
+fi
+
+echo_status "Ruta normalizada: $NORMALIZED_PATH"
+
+# Crear estructura de directorios en .claude-db
+echo_status "Creando estructura en .claude-db..."
+mkdir -p "$CLAUDE_DB_PATH/projects/$NORMALIZED_PATH"
+
+# Verificar directorio de conversaciones
+if [ ! -d "claude-conversations" ]; then
+    echo_error "No se encontró el directorio 'claude-conversations'"
+fi
+
+# Verificar directorio de tareas
+if [ ! -d "claude-todos" ]; then
+    echo_warning "No se encontró el directorio 'claude-todos'"
+    echo_warning "No se instalarán tareas."
+    INSTALL_TODOS=false
+else
+    INSTALL_TODOS=true
+fi
+
+# Verificar directorio de statsig
+if [ ! -d "claude-statsig" ]; then
+    echo_warning "No se encontró el directorio 'claude-statsig'"
+    echo_warning "No se instalarán archivos statsig."
+    INSTALL_STATSIG=false
+else
+    INSTALL_STATSIG=true
+fi
+
+# Procesar conversaciones
+echo_status "Procesando conversaciones..."
+CONVERSATIONS_COUNT=0
+
+for CONV_FILE in claude-conversations/*.jsonl; do
+    if [ -f "$CONV_FILE" ]; then
+        CONV_FILENAME=$(basename "$CONV_FILE")
+        
+        # Adaptar rutas en archivos JSONL si es necesario
+        if [ -n "$ORIGINAL_PROJECT_PATH" ] && [ "$ORIGINAL_PROJECT_PATH" != "desconocido" ]; then
+            echo_status "Adaptando rutas en $CONV_FILENAME..."
+            
+            # Crear archivo temporal
+            TMP_FILE="$(mktemp)"
+            
+            # Reemplazar rutas en el archivo
+            if [ "$SYSTEM" = "Darwin" ]; then
+                # macOS requiere un enfoque diferente para sed
+                sed "s|$ORIGINAL_PROJECT_PATH|$CURRENT_PATH|g" "$CONV_FILE" > "$TMP_FILE"
+            else
+                # Linux y otros
+                sed "s|$ORIGINAL_PROJECT_PATH|$CURRENT_PATH|g" "$CONV_FILE" > "$TMP_FILE"
+            fi
+            
+            # Mover el archivo temporal al destino
+            cp "$TMP_FILE" "$CLAUDE_DB_PATH/projects/$NORMALIZED_PATH/$CONV_FILENAME"
+            
+            # Eliminar archivo temporal
+            rm "$TMP_FILE"
+        else
+            # Copiar sin modificar
+            cp "$CONV_FILE" "$CLAUDE_DB_PATH/projects/$NORMALIZED_PATH/$CONV_FILENAME"
+        fi
+        
+        CONVERSATIONS_COUNT=$((CONVERSATIONS_COUNT + 1))
+    fi
+done
+
+echo_status "Se instalaron $CONVERSATIONS_COUNT conversaciones."
+
+# Copiar archivos de tareas
+if [ "$INSTALL_TODOS" = true ]; then
+    echo_status "Copiando archivos de tareas..."
+    TODOS_COUNT=0
+    
+    for TODO_FILE in claude-todos/*.json; do
+        if [ -f "$TODO_FILE" ]; then
+            TODO_FILENAME=$(basename "$TODO_FILE")
+            cp "$TODO_FILE" "$CLAUDE_DB_PATH/todos/$TODO_FILENAME"
+            TODOS_COUNT=$((TODOS_COUNT + 1))
+        fi
+    done
+    
+    echo_status "Se instalaron $TODOS_COUNT archivos de tareas."
+else
+    echo_status "No se instalaron archivos de tareas."
+fi
+
+# Copiar archivos de statsig
+if [ "$INSTALL_STATSIG" = true ]; then
+    echo_status "Copiando archivos statsig..."
+    STATSIG_COUNT=0
+    
+    for STATSIG_FILE in claude-statsig/*; do
+        if [ -f "$STATSIG_FILE" ]; then
+            STATSIG_FILENAME=$(basename "$STATSIG_FILE")
+            cp "$STATSIG_FILE" "$CLAUDE_DB_PATH/statsig/$STATSIG_FILENAME"
+            STATSIG_COUNT=$((STATSIG_COUNT + 1))
+        fi
+    done
+    
+    echo_status "Se instalaron $STATSIG_COUNT archivos statsig."
+else
+    echo_status "No se instalaron archivos statsig."
+fi
+
+echo_success "¡Instalación completada!"
+echo ""
+echo_success "El proyecto está listo para usarse con Claude Code."
+echo_success "Para abrir el proyecto con Claude Code, ejecute:"
+echo_success "  cd $CURRENT_PATH"
+echo_success "  claude"
